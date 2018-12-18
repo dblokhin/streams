@@ -29,12 +29,20 @@ var defaultStreamFunc streamFunc = func(input chan interface{}) chan interface{}
 	return input
 }
 
+type streamStatus int
+
+const (
+	streamActive streamStatus = iota // default value
+	streamClosed
+)
+
 type Stream struct {
 	input  chan interface{}
 	err    chan error
 	quit   chan struct{}
 	update chan struct{} // update channel signals need updates cachedListeners
 	fn     streamFunc
+	status streamStatus
 
 	wg              sync.WaitGroup
 	cachedListeners []streamHandler
@@ -119,17 +127,23 @@ func (s *Stream) subStream(fn streamFunc) *Stream {
 
 // Add adds value to stream that emits this value to listeners
 func (s *Stream) Add(value interface{}) {
-	s.input <- value
+	if s.status == streamActive {
+		s.input <- value
+	}
 }
 
 // Error adds error to stream that emits this err to listeners onError
 func (s *Stream) Error(value interface{}) {
-	err := value.(error)
-	s.err <- err
+	if s.status == streamActive {
+		if err, ok := value.(error); ok {
+			s.err <- err
+		}
+	}
 }
 
 // Close closes stream
 func (s *Stream) Close() {
+	s.status = streamClosed
 	close(s.quit)
 	s.wg.Wait()
 }
