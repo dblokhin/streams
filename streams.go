@@ -4,7 +4,9 @@
 
 package streams
 
-import "sync"
+import (
+	"sync"
+)
 
 type S interface {
 	Add(value interface{})
@@ -41,6 +43,7 @@ func NewStream() *Stream {
 	}
 
 	go func() {
+	work:
 		for {
 			select {
 			// update recipients
@@ -63,7 +66,7 @@ func NewStream() *Stream {
 					}
 				}
 			case <-stream.quit:
-				break;
+				break work
 			}
 		}
 
