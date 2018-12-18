@@ -28,6 +28,7 @@ type Stream struct {
 	quit   chan struct{}
 	update chan struct{} // update channel signals need updates cachedListeners
 
+	wg sync.WaitGroup
 	cachedListeners []streamHandler
 	listeners       []streamHandler
 	m               sync.Mutex
@@ -42,11 +43,13 @@ func NewStream() *Stream {
 		update: make(chan struct{}),
 	}
 
+	stream.wg.Add(1)
+
 	go func() {
 	work:
 		for {
 			select {
-			// update recipients
+			// update cached recipients
 			case <-stream.update:
 				stream.m.Lock()
 				stream.cachedListeners = make([]streamHandler, len(stream.listeners))
@@ -79,6 +82,8 @@ func NewStream() *Stream {
 				go handler.onCancel(nil)
 			}
 		}
+
+		stream.wg.Done()
 	}()
 
 	return stream
@@ -89,8 +94,16 @@ func (s *Stream) Add(value interface{}) {
 	s.input <- value
 }
 
+// Error adds error to stream that emits this err to listeners onError
+func (s *Stream) Error(value interface{}) {
+	err := value.(error)
+	s.err <- err
+}
+
+// Close closes stream
 func (s *Stream) Close() {
 	close(s.quit)
+	s.wg.Wait()
 }
 
 // Listen executes 3 handlers: onData, onError, OnCancel
