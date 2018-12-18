@@ -124,4 +124,5 @@ func (s *Stream) Listen(handlers ...EventHandler) {
 	s.m.Lock()
 	s.listeners = append(s.listeners, handler)
 	s.m.Unlock()
+	s.update <- struct{}{}
 }
