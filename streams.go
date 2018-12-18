@@ -53,7 +53,7 @@ type Stream struct {
 // NewStream returns created broadcast stream
 func NewStream() *Stream {
 	stream := &Stream{
-		input:  make(chan interface{}, 100),
+		input:  make(chan interface{}),
 		err:    make(chan error),
 		quit:   make(chan struct{}),
 		update: make(chan struct{}),
@@ -110,7 +110,7 @@ func NewStream() *Stream {
 // subStream creates new stream with your streamFunc that changes input data
 func (s *Stream) subStream(fn streamFunc) *Stream {
 	stream := &Stream{
-		input:  make(chan interface{}, 100),
+		input:  make(chan interface{}),
 		err:    make(chan error),
 		quit:   make(chan struct{}),
 		update: make(chan struct{}),
