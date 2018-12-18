@@ -77,13 +77,13 @@ func NewStream() *Stream {
 			case item := <-input:
 				for _, handler := range stream.cachedListeners {
 					if handler.onData != nil {
-						go handler.onData(item)
+						handler.onData(item)
 					}
 				}
 			case err := <-stream.err:
 				for _, handler := range stream.cachedListeners {
 					if handler.onError != nil {
-						go handler.onError(err)
+						handler.onError(err)
 					}
 				}
 			case <-stream.quit:
@@ -97,7 +97,7 @@ func NewStream() *Stream {
 
 		for _, handler := range stream.cachedListeners {
 			if handler.onCancel != nil {
-				go handler.onCancel(nil)
+				handler.onCancel(nil)
 			}
 		}
 
@@ -125,10 +125,17 @@ func (s *Stream) subStream(fn streamFunc) *Stream {
 	return stream
 }
 
-// Add adds value to stream that emits this value to listeners
+// Add adds value into stream that emits this value to listeners
 func (s *Stream) Add(value interface{}) {
 	if s.status == streamActive {
 		s.input <- value
+	}
+}
+
+// AddArray adds array values into stream
+func (s *Stream) AddArray(values []interface{}) {
+	for _, v := range values {
+		s.Add(v)
 	}
 }
 
@@ -180,4 +187,10 @@ func (s *Stream) Listen(handlers ...EventHandler) {
 	s.listeners = append(s.listeners, handler)
 	s.m.Unlock()
 	s.update <- struct{}{}
+}
+
+// Just emits values and close stream
+func (s *Stream) Just(values []interface{}) {
+	s.AddArray(values)
+	s.Close()
 }
