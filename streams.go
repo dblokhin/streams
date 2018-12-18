@@ -22,13 +22,21 @@ type streamHandler struct {
 	onCancel EventHandler
 }
 
+type streamFunc func(input chan interface{}) chan interface{}
+
+// defaultStreamFunc doesn't change input data
+var defaultStreamFunc streamFunc = func(input chan interface{}) chan interface{} {
+	return input
+}
+
 type Stream struct {
 	input  chan interface{}
 	err    chan error
 	quit   chan struct{}
 	update chan struct{} // update channel signals need updates cachedListeners
+	fn     streamFunc
 
-	wg sync.WaitGroup
+	wg              sync.WaitGroup
 	cachedListeners []streamHandler
 	listeners       []streamHandler
 	m               sync.Mutex
@@ -41,9 +49,11 @@ func NewStream() *Stream {
 		err:    make(chan error),
 		quit:   make(chan struct{}),
 		update: make(chan struct{}),
+		fn:     defaultStreamFunc,
 	}
 
 	stream.wg.Add(1)
+	input := stream.fn(stream.input)
 
 	go func() {
 	work:
@@ -56,7 +66,7 @@ func NewStream() *Stream {
 				copy(stream.cachedListeners, stream.listeners)
 				stream.m.Unlock()
 
-			case item := <-stream.input:
+			case item := <-input:
 				for _, handler := range stream.cachedListeners {
 					if handler.onData != nil {
 						go handler.onData(item)
@@ -86,6 +96,24 @@ func NewStream() *Stream {
 		stream.wg.Done()
 	}()
 
+	return stream
+}
+
+// subStream creates new stream with your streamFunc that changes input data
+func (s *Stream) subStream(fn streamFunc) *Stream {
+	stream := &Stream{
+		input:  make(chan interface{}, 100),
+		err:    make(chan error),
+		quit:   make(chan struct{}),
+		update: make(chan struct{}),
+		fn:     fn,
+	}
+
+	onCancel := func(value interface{}) {
+		stream.Close()
+	}
+
+	s.Listen(stream.Add, stream.Error, onCancel)
 	return stream
 }
 
@@ -125,7 +153,7 @@ func (s *Stream) Listen(handlers ...EventHandler) {
 		onData = handlers[0]
 
 	default:
-		return;
+		return
 	}
 
 	handler := streamHandler{
