@@ -16,11 +16,7 @@ type S interface {
 
 type EventHandler func(value interface{})
 
-type streamHandler struct {
-	onData     EventHandler
-	onError    EventHandler
-	onComplete EventHandler
-}
+type streamHandler chan streamEvent
 
 type streamFunc func(input chan streamEvent) chan streamEvent
 
@@ -29,19 +25,17 @@ var defaultStreamFunc streamFunc = func(input chan streamEvent) chan streamEvent
 	return input
 }
 
-type streamStatus int
-
 const (
 	// Stream statuses
-	streamActive streamStatus = iota // default value
-	streamClosed
+	streamStatusActive int32 = iota // default value
+	streamStatusClosed
 
 	// Event types
-	streamData  eventType = iota
-	streamError
-	streamComplete
+	streamEventData eventType = iota
+	streamEventError
+	streamEventComplete
 
-	maxBufferSize = 1024*8
+	maxBufferSize = 1024 * 8
 )
 
 type (
@@ -54,69 +48,42 @@ type (
 )
 
 type Stream struct {
-	input  chan streamEvent
-	update chan struct{} // update channel signals need updates cachedListeners
-	fn     streamFunc
-	status streamStatus
-
-	wg              sync.WaitGroup
-	cachedListeners []streamHandler
-	listeners       []streamHandler
-	m               sync.Mutex
+	input       chan streamEvent
+	fn          streamFunc
+	status      int32
+	statusLock  sync.Mutex
+	wg          sync.WaitGroup
+	listens     []streamHandler
+	listensLock sync.Mutex
 }
 
 // NewStream returns created broadcast stream
 func NewStream() *Stream {
 	stream := &Stream{
 		input:  make(chan streamEvent, maxBufferSize),
-		update: make(chan struct{}),
+		status: streamStatusActive,
 		fn:     defaultStreamFunc,
 	}
 
 	stream.wg.Add(1)
 	input := stream.fn(stream.input)
 
+	// worker
 	go func() {
-	work:
-		for {
-			select {
-			// update cached recipients
-			case <-stream.update:
-				stream.m.Lock()
-				stream.cachedListeners = make([]streamHandler, len(stream.listeners))
-				copy(stream.cachedListeners, stream.listeners)
-				stream.m.Unlock()
-
-			case item := <-input:
-				switch item.event {
-				case streamData:
-					for _, handler := range stream.cachedListeners {
-						if handler.onData != nil {
-							handler.onData(item.data)
-						}
-					}
-
-				case streamError:
-					for _, handler := range stream.cachedListeners {
-						if handler.onError != nil {
-							handler.onError(item.data)
-						}
-					}
-
-				case streamComplete:
-					for _, handler := range stream.cachedListeners {
-						if handler.onComplete != nil {
-							handler.onComplete(nil)
-						}
-					}
-
-					break work;
-				}
+		for item := range input {
+			stream.listensLock.Lock()
+			for _, handler := range stream.listens {
+				handler <- item
 			}
+			stream.listensLock.Unlock()
 		}
 
-		close(stream.input)
-		close(stream.update)
+		stream.listensLock.Lock()
+		for _, handler := range stream.listens {
+			close(handler)
+		}
+		stream.listensLock.Unlock()
+
 		stream.wg.Done()
 	}()
 
@@ -127,7 +94,7 @@ func NewStream() *Stream {
 func (s *Stream) subStream(fn streamFunc) *Stream {
 	stream := &Stream{
 		input:  make(chan streamEvent, maxBufferSize),
-		update: make(chan struct{}),
+		status: streamStatusActive,
 		fn:     fn,
 	}
 
@@ -139,28 +106,38 @@ func (s *Stream) subStream(fn streamFunc) *Stream {
 	return stream
 }
 
-// Add adds value into stream that emits this value to listeners
+// Add adds value into stream that emits this value to listens
 func (s *Stream) Add(value interface{}) {
-	if s.status == streamActive {
+	s.statusLock.Lock()
+	if s.status == streamStatusActive {
 		s.input <- streamEvent{
-			event: streamData,
+			event: streamEventData,
 			data:  value,
 		}
 	}
+	s.statusLock.Unlock()
 }
 
-// AddArray adds array values into stream
-func (s *Stream) AddArray(values []interface{}) {
+// addArray adds array values into stream
+func (s *Stream) addArray(values []interface{}) {
 	for _, v := range values {
 		s.Add(v)
 	}
 }
 
-// AddError adds error to stream that emits this err to listeners onError
+// AddError adds error to stream that emits this err to listens onError
 func (s *Stream) AddError(value interface{}) {
-	if s.status == streamActive {
+	if _, ok := value.(error); !ok {
+		return
+	}
+
+	s.statusLock.Lock()
+	active := s.status == streamStatusActive
+	s.statusLock.Unlock()
+
+	if active {
 		s.input <- streamEvent{
-			event: streamError,
+			event: streamEventError,
 			data:  value,
 		}
 	}
@@ -168,55 +145,77 @@ func (s *Stream) AddError(value interface{}) {
 
 // Close closes stream
 func (s *Stream) Close() {
-	if s.status == streamActive {
-		s.status = streamClosed
+	s.statusLock.Lock()
+
+	if s.status == streamStatusActive {
+		s.status = streamStatusClosed
+		s.statusLock.Unlock()
 
 		s.input <- streamEvent{
-			event: streamComplete,
+			event: streamEventComplete,
 			data:  nil,
 		}
+		close(s.input)
 		s.wg.Wait()
+		return
 	}
+
+	s.statusLock.Unlock()
+}
+
+// listen executes 3 handlers: onData, onError, OnComplete
+func (s *Stream) listen(handler chan streamEvent) {
+	s.listensLock.Lock()
+	s.listens = append(s.listens, handler)
+	s.listensLock.Unlock()
 }
 
 // Listen executes 3 handlers: onData, onError, OnComplete
 func (s *Stream) Listen(handlers ...EventHandler) {
-	if len(handlers) == 0 {
+	s.statusLock.Lock()
+	active := s.status == streamStatusActive
+	s.statusLock.Unlock()
+
+	if !active || len(handlers) == 0 {
 		return
 	}
 
-	var onData, onError, onCancel EventHandler
-
-	switch len(handlers) {
-	case 3:
-		onCancel = handlers[2]
-		fallthrough
-	case 2:
-		onError = handlers[1]
-		fallthrough
-	case 1:
-		onData = handlers[0]
-
-	default:
-		return
+	onNext := func(v interface{}) {
+		handlers[0](v)
 	}
 
-	handler := streamHandler{
-		onData:     onData,
-		onError:    onError,
-		onComplete: onCancel,
+	onError := func(v interface{}) {
+		if len(handlers) > 1 {
+			handlers[1](v)
+		}
 	}
 
-	s.m.Lock()
-	s.listeners = append(s.listeners, handler)
-	s.m.Unlock()
-	s.update <- struct{}{}
+	onComplete := func() {
+		if len(handlers) > 2 {
+			handlers[2](nil)
+		}
+	}
+
+	eventInput := make(chan streamEvent)
+	go func() {
+		for item := range eventInput {
+			switch item.event {
+			case streamEventData:
+				onNext(item.data)
+			case streamEventError:
+				onError(item.data)
+			case streamEventComplete:
+				onComplete()
+			}
+		}
+	}()
+	s.listen(eventInput)
 }
 
 // Just emits values and close stream
-func (s *Stream) Just(value interface{}, values ...interface{}) *Stream {
+func (s *Stream) Just(values ...interface{}) *Stream {
 	go func() {
-		s.AddArray(values)
+		s.addArray(values)
 		s.Close()
 	}()
 	return s
