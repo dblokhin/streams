@@ -53,13 +53,13 @@ func NewStream() *Stream {
 			case item := <-stream.input:
 				for _, handler := range stream.cachedListeners {
 					if handler.onData != nil {
-						handler.onData(item)
+						go handler.onData(item)
 					}
 				}
 			case err := <-stream.err:
 				for _, handler := range stream.cachedListeners {
-					if handler.onData != nil {
-						handler.onError(err)
+					if handler.onError != nil {
+						go handler.onError(err)
 					}
 				}
 			case <-stream.quit:
@@ -72,8 +72,8 @@ func NewStream() *Stream {
 		close(stream.update)
 
 		for _, handler := range stream.cachedListeners {
-			if handler.onData != nil {
-				handler.onCancel(nil)
+			if handler.onCancel != nil {
+				go handler.onCancel(nil)
 			}
 		}
 	}()
