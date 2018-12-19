@@ -186,3 +186,25 @@ func TestStream_Just(t *testing.T) {
 	time.Sleep(time.Millisecond * 200)
 	s.Close()
 }
+
+func TestStream_Filter(t *testing.T) {
+	h := func(index int) EventHandler {
+		return func(value interface{}) {
+			t.Logf("from %d value: %v\n", index, value)
+		}
+	}
+
+	s := NewStream().Filter(func(x interface{}) bool {
+		v, ok := x.(int)
+		if !ok {
+			return false
+		}
+
+		return v > 3
+	}).Listen(h(1)).Just(1, 2, 3, 4, 10, 100, 1000)
+
+	s.Listen(h(2))
+
+	time.Sleep(time.Millisecond * 200)
+	s.Close()
+}
