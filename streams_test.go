@@ -87,12 +87,33 @@ func TestStream_Listen(t *testing.T) {
 	}
 }
 
+func TestStream_Listen2(t *testing.T) {
+	s := NewStream()
+	defer s.Close()
+
+	h := func(index int) EventHandler {
+		return func(value interface{}) {
+			fmt.Printf("from %d value: %v", index, value)
+		}
+	}
+
+	const n = 100
+
+	for i := 0; i < n; i++ {
+		s = s.Listen(h(i)).Listen(h(i + 1000)).Listen(h(i + 1000000))
+	}
+
+	if len(s.listens) != n*3 {
+		t.Fatalf("invalid listens number: %d, expected: %d", len(s.listens), n*3)
+	}
+}
+
 func TestStream_Add(t *testing.T) {
 	s := NewStream()
 
 	h := func(index int) EventHandler {
 		return func(value interface{}) {
-			t.Logf("from %d value: %v\n", index, value)
+			//t.Logf("from %d value: %v\n", index, value)
 		}
 	}
 
@@ -103,7 +124,7 @@ func TestStream_Add(t *testing.T) {
 	}
 
 	for i := 0; i < 7; i++ {
-		t.Logf("send value: %d", i)
+		//t.Logf("send value: %d", i)
 		s.Add(i)
 	}
 
@@ -150,7 +171,7 @@ func TestStream_Add3(t *testing.T) {
 
 	h := func(index int) EventHandler {
 		return func(value interface{}) {
-			t.Logf("from %d value: %v\n", index, value)
+			//t.Logf("from %d value: %v\n", index, value)
 		}
 	}
 
@@ -173,7 +194,7 @@ func TestStream_Add3(t *testing.T) {
 }
 
 func TestStream_Just(t *testing.T) {
-	s := NewStream().Just(1, 2, 3, 4)
+	s := NewStream()
 
 	h := func(index int) EventHandler {
 		return func(value interface{}) {
@@ -181,16 +202,24 @@ func TestStream_Just(t *testing.T) {
 		}
 	}
 
-	s.Listen(h(1))
-
-	time.Sleep(time.Millisecond * 200)
+	s.Listen(h(1)).Just(1, 2, 3, 4)
 	s.Close()
 }
 
 func TestStream_Filter(t *testing.T) {
+	ans := 0
+	var m sync.Mutex
+
 	h := func(index int) EventHandler {
 		return func(value interface{}) {
-			t.Logf("from %d value: %v\n", index, value)
+			v, ok := value.(int)
+			if !ok {
+				return
+			}
+
+			m.Lock()
+			ans += v
+			m.Unlock()
 		}
 	}
 
@@ -201,10 +230,11 @@ func TestStream_Filter(t *testing.T) {
 		}
 
 		return v > 3
-	}).Listen(h(1)).Just(1, 2, 3, 4, 10, 100, 1000)
+	}).Listen(h(1))
+	s.Just(1, 2, 3, 4, 10, 100, 1000)
+	s.WaitDone()
 
-	s.Listen(h(2))
-
-	time.Sleep(time.Millisecond * 200)
-	s.Close()
+	if ans != 1114 {
+		t.Fatalf("invalid answer: %d, expected: %d", ans, 1114)
+	}
 }

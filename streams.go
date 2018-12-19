@@ -223,6 +223,10 @@ func (s *Stream) Listen(handlers ...EventHandler) *Stream {
 	return s
 }
 
+func (s *Stream) WaitDone() {
+	s.wg.Wait()
+}
+
 // Just emits values and close stream
 func (s *Stream) Just(values ...interface{}) *Stream {
 	go func() {
