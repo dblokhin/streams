@@ -65,29 +65,38 @@ func NewStream() *Stream {
 		fn:     defaultStreamFunc,
 	}
 
-	stream.wg.Add(1)
-	input := stream.fn(stream.input)
+	stream.startWorker()
+	return stream
+}
 
-	// worker
+func (s *Stream) startWorker() {
+	s.wg.Add(1)
+	input := s.fn(s.input)
+
 	go func() {
 		for item := range input {
-			stream.listensLock.Lock()
-			for _, handler := range stream.listens {
-				handler <- item
-			}
-			stream.listensLock.Unlock()
+			s.propagateItem(item)
 		}
 
-		stream.listensLock.Lock()
-		for _, handler := range stream.listens {
-			close(handler)
-		}
-		stream.listensLock.Unlock()
-
-		stream.wg.Done()
+		s.closeListens()
+		s.wg.Done()
 	}()
+}
 
-	return stream
+func (s *Stream) propagateItem(item streamEvent) {
+	s.listensLock.Lock()
+	for _, handler := range s.listens {
+		handler <- item
+	}
+	s.listensLock.Unlock()
+}
+
+func (s *Stream) closeListens() {
+	s.listensLock.Lock()
+	for _, handler := range s.listens {
+		close(handler)
+	}
+	s.listensLock.Unlock()
 }
 
 // subStream creates new stream with your streamFunc that changes input data
@@ -97,6 +106,7 @@ func (s *Stream) subStream(fn streamFunc) *Stream {
 		status: streamStatusActive,
 		fn:     fn,
 	}
+	stream.startWorker()
 
 	onComplete := func(value interface{}) {
 		stream.Close()
@@ -109,13 +119,14 @@ func (s *Stream) subStream(fn streamFunc) *Stream {
 // Add adds value into stream that emits this value to listens
 func (s *Stream) Add(value interface{}) {
 	s.statusLock.Lock()
+	defer s.statusLock.Unlock()
+
 	if s.status == streamStatusActive {
 		s.input <- streamEvent{
 			event: streamEventData,
 			data:  value,
 		}
 	}
-	s.statusLock.Unlock()
 }
 
 // addArray adds array values into stream
@@ -132,10 +143,9 @@ func (s *Stream) AddError(value interface{}) {
 	}
 
 	s.statusLock.Lock()
-	active := s.status == streamStatusActive
-	s.statusLock.Unlock()
+	defer s.statusLock.Unlock()
 
-	if active {
+	if s.status == streamStatusActive {
 		s.input <- streamEvent{
 			event: streamEventError,
 			data:  value,
@@ -146,10 +156,10 @@ func (s *Stream) AddError(value interface{}) {
 // Close closes stream
 func (s *Stream) Close() {
 	s.statusLock.Lock()
+	defer s.statusLock.Unlock()
 
 	if s.status == streamStatusActive {
 		s.status = streamStatusClosed
-		s.statusLock.Unlock()
 
 		s.input <- streamEvent{
 			event: streamEventComplete,
@@ -157,10 +167,7 @@ func (s *Stream) Close() {
 		}
 		close(s.input)
 		s.wg.Wait()
-		return
 	}
-
-	s.statusLock.Unlock()
 }
 
 // listen executes 3 handlers: onData, onError, OnComplete
@@ -171,14 +178,17 @@ func (s *Stream) listen(handler chan streamEvent) {
 }
 
 // Listen executes 3 handlers: onData, onError, OnComplete
-func (s *Stream) Listen(handlers ...EventHandler) {
-	s.statusLock.Lock()
-	active := s.status == streamStatusActive
-	s.statusLock.Unlock()
-
-	if !active || len(handlers) == 0 {
-		return
+func (s *Stream) Listen(handlers ...EventHandler) *Stream {
+	if len(handlers) == 0 {
+		return s
 	}
+
+	s.statusLock.Lock()
+	if s.status != streamStatusActive {
+		s.statusLock.Unlock()
+		return s
+	}
+	s.statusLock.Unlock()
 
 	onNext := func(v interface{}) {
 		handlers[0](v)
@@ -210,6 +220,7 @@ func (s *Stream) Listen(handlers ...EventHandler) {
 		}
 	}()
 	s.listen(eventInput)
+	return s
 }
 
 // Just emits values and close stream
@@ -219,4 +230,28 @@ func (s *Stream) Just(values ...interface{}) *Stream {
 		s.Close()
 	}()
 	return s
+}
+
+// Filter filters elements emitted from streams
+func (s *Stream) Filter(apply func(value interface{}) bool) *Stream {
+	return s.subStream(func(input chan streamEvent) chan streamEvent {
+		output := make(chan streamEvent)
+		go func() {
+			for item := range input {
+				// pass Error & Complete events always
+				if item.event == streamEventError || item.event == streamEventComplete {
+					output <- item
+					continue
+				}
+
+				if apply(item.data) {
+					output <- item
+				}
+			}
+
+			close(output)
+		}()
+
+		return output
+	})
 }
