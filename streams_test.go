@@ -129,6 +129,7 @@ func TestStream_Add(t *testing.T) {
 	}
 
 	s.Close()
+	s.WaitDone()
 }
 
 func TestStream_Add2(t *testing.T) {
@@ -164,6 +165,7 @@ func TestStream_Add2(t *testing.T) {
 	wg2.Wait()
 	wg1.Wait()
 	s.Close()
+	s.WaitDone()
 }
 
 func TestStream_Add3(t *testing.T) {
@@ -194,16 +196,27 @@ func TestStream_Add3(t *testing.T) {
 }
 
 func TestStream_Just(t *testing.T) {
-	s := NewStream()
+	ans := 0
+	var m sync.Mutex
+	handler := func(value interface{}) {
+		//t.Logf("from %d value: %v\n", index, value)
 
-	h := func(index int) EventHandler {
-		return func(value interface{}) {
-			t.Logf("from %d value: %v\n", index, value)
+		v, ok := value.(int)
+		if !ok {
+			return
 		}
+
+		m.Lock()
+		ans++
+		ans += v
+		m.Unlock()
 	}
 
-	s.Listen(h(1)).Just(1, 2, 3, 4)
-	s.Close()
+	NewStream().Just(1, 2, 3, 4).Listen(handler).WaitDone()
+
+	if ans != 14 {
+		t.Fatalf("invalid answer: %d, expected: %d", ans, 14)
+	}
 }
 
 func TestStream_Filter(t *testing.T) {
@@ -223,16 +236,14 @@ func TestStream_Filter(t *testing.T) {
 		}
 	}
 
-	s := NewStream().Filter(func(x interface{}) bool {
+	NewStream().Filter(func(x interface{}) bool {
 		v, ok := x.(int)
 		if !ok {
 			return false
 		}
 
 		return v > 3
-	}).Listen(h(1))
-	s.Just(1, 2, 3, 4, 10, 100, 1000)
-	s.WaitDone()
+	}).Listen(h(1)).Just(1, 2, 3, 4, 10, 100, 1000, 0, 1).WaitDone()
 
 	if ans != 1114 {
 		t.Fatalf("invalid answer: %d, expected: %d", ans, 1114)
