@@ -199,7 +199,7 @@ func TestStream_Just(t *testing.T) {
 	ans := 0
 	var m sync.Mutex
 	handler := func(value interface{}) {
-		//t.Logf("from %d value: %v\n", index, value)
+		//t.Logf("value: %v\n", value)
 
 		v, ok := value.(int)
 		if !ok {
@@ -212,7 +212,7 @@ func TestStream_Just(t *testing.T) {
 		m.Unlock()
 	}
 
-	NewStream().Just(1, 2, 3, 4).Listen(handler).WaitDone()
+	NewStream().Listen(handler).Just(1, 2, 3, 4).WaitDone()
 
 	if ans != 14 {
 		t.Fatalf("invalid answer: %d, expected: %d", ans, 14)

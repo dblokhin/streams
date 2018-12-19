@@ -35,7 +35,7 @@ const (
 	streamEventError
 	streamEventComplete
 
-	maxBufferSize = 1024 * 8
+	maxBufferSize = 50
 )
 
 type (
@@ -131,8 +131,16 @@ func (s *Stream) Add(value interface{}) {
 
 // addArray adds array values into stream
 func (s *Stream) addArray(values []interface{}) {
-	for _, v := range values {
-		s.Add(v)
+	s.statusLock.Lock()
+	defer s.statusLock.Unlock()
+
+	if s.status == streamStatusActive {
+		for _, v := range values {
+			s.input <- streamEvent{
+				event: streamEventData,
+				data:  v,
+			}
+		}
 	}
 }
 
