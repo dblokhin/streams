@@ -45,6 +45,8 @@ func TestStream_Close2(t *testing.T) {
 	s.Close()
 	s.Close()
 	s.Close()
+	s.WaitDone()
+	s.WaitDone()
 }
 
 func TestStream_Close3(t *testing.T) {
@@ -201,18 +203,13 @@ func TestStream_Just(t *testing.T) {
 	handler := func(value interface{}) {
 		//t.Logf("value: %v\n", value)
 
-		v, ok := value.(int)
-		if !ok {
-			return
-		}
-
 		m.Lock()
 		ans++
-		ans += v
+		ans += value.(int)
 		m.Unlock()
 	}
 
-	NewStream().Listen(handler).Just(1, 2, 3, 4).WaitDone()
+	Just(1, 2, 3, 4).Listen(handler).WaitDone()
 
 	if ans != 14 {
 		t.Fatalf("invalid answer: %d, expected: %d", ans, 14)
@@ -223,29 +220,44 @@ func TestStream_Filter(t *testing.T) {
 	ans := 0
 	var m sync.Mutex
 
-	h := func(index int) EventHandler {
-		return func(value interface{}) {
-			v, ok := value.(int)
-			if !ok {
-				return
-			}
-
-			m.Lock()
-			ans += v
-			m.Unlock()
-		}
+	h := func(value interface{}) {
+		v := value.(int)
+		m.Lock()
+		ans += v
+		m.Unlock()
 	}
 
-	NewStream().Filter(func(x interface{}) bool {
-		v, ok := x.(int)
-		if !ok {
-			return false
-		}
+	filter := func(x interface{}) bool {
+		return x.(int) > 3
+	}
 
-		return v > 3
-	}).Listen(h(1)).Just(1, 2, 3, 4, 10, 100, 1000, 0, 1).WaitDone()
+	Just(1, 2, 3, 4, 10, 100, 1000, 0, 1).Filter(filter).Listen(h).WaitDone()
 
 	if ans != 1114 {
 		t.Fatalf("invalid answer: %d, expected: %d", ans, 1114)
+	}
+
+	// check for empty stream
+	Just().Filter(filter).Listen(h).WaitDone()
+
+}
+
+func TestStream_First(t *testing.T) {
+
+	ans := 0
+	var m sync.Mutex
+	handler := func(value interface{}) {
+		m.Lock()
+		ans = value.(int)
+		m.Unlock()
+	}
+
+	filter := func(value interface{}) bool {
+		return value.(int) > 10
+	}
+
+	Just(1, 2, 42, 3).Filter(filter).First().Listen(handler).WaitDone()
+	if ans != 42 {
+		t.Fatalf("invalid answer: %d, expected: %d", ans, 42)
 	}
 }

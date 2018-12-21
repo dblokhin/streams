@@ -18,10 +18,12 @@ type EventHandler func(value interface{})
 
 type streamHandler chan streamEvent
 
-type streamFunc func(input chan streamEvent) chan streamEvent
+// streamFunc changes input event and emmit it to new channel.
+// new channel MUST be closed when input closed
+type streamFunc func(s *Stream, input chan streamEvent) chan streamEvent
 
 // defaultStreamFunc doesn't change input data
-var defaultStreamFunc streamFunc = func(input chan streamEvent) chan streamEvent {
+var defaultStreamFunc streamFunc = func(s *Stream, input chan streamEvent) chan streamEvent {
 	return input
 }
 
@@ -35,7 +37,7 @@ const (
 	streamEventError
 	streamEventComplete
 
-	maxBufferSize = 50
+	maxBufferSize = 0
 )
 
 type (
@@ -48,13 +50,17 @@ type (
 )
 
 type Stream struct {
-	input       chan streamEvent
-	fn          streamFunc
-	status      int32
-	statusLock  sync.Mutex
-	wg          sync.WaitGroup
-	listens     []streamHandler
-	listensLock sync.Mutex
+	input   chan streamEvent
+	fn      streamFunc
+	status  int32
+	listens []streamHandler
+	lock    sync.Mutex
+	wg      sync.WaitGroup
+}
+
+var completeStreamEvent = streamEvent{
+	event: streamEventComplete,
+	data:  nil,
 }
 
 // NewStream returns created broadcast stream
@@ -71,7 +77,7 @@ func NewStream() *Stream {
 
 func (s *Stream) startWorker() {
 	s.wg.Add(1)
-	input := s.fn(s.input)
+	input := s.fn(s, s.input)
 
 	go func() {
 		for item := range input {
@@ -84,62 +90,101 @@ func (s *Stream) startWorker() {
 }
 
 func (s *Stream) propagateItem(item streamEvent) {
-	s.listensLock.Lock()
 	for _, handler := range s.listens {
 		handler <- item
 	}
-	s.listensLock.Unlock()
 }
 
 func (s *Stream) closeListens() {
-	s.listensLock.Lock()
 	for _, handler := range s.listens {
 		close(handler)
 	}
-	s.listensLock.Unlock()
+}
+
+func (s *Stream) closeWorker() {
+	s.input <- completeStreamEvent
+	close(s.input)
+}
+
+func (s *Stream) isActive() bool {
+	return s.status == streamStatusActive
+}
+
+// Close closes stream
+func (s *Stream) Close() {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	if s.isActive() {
+		s.status = streamStatusClosed
+		s.closeWorker()
+		s.wg.Wait()
+	}
 }
 
 // subStream creates new stream with your streamFunc that changes input data
 func (s *Stream) subStream(fn streamFunc) *Stream {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	if !s.isActive() {
+		return s
+	}
+
 	stream := &Stream{
 		input:  make(chan streamEvent, maxBufferSize),
 		status: streamStatusActive,
 		fn:     fn,
 	}
+
 	stream.startWorker()
+	eventInput := make(chan streamEvent)
+	s.listens = append(s.listens, eventInput)
 
-	onComplete := func(value interface{}) {
-		stream.Close()
-	}
+	go func() {
+		for item := range eventInput {
+			switch item.event {
+			case streamEventData:
+				stream.Add(item.data)
+			case streamEventError:
+				stream.AddError(item.data)
+			case streamEventComplete:
+				stream.Close()
+			}
+		}
+	}()
 
-	s.Listen(stream.Add, stream.AddError, onComplete)
 	return stream
 }
 
 // Add adds value into stream that emits this value to listens
 func (s *Stream) Add(value interface{}) {
-	s.statusLock.Lock()
-	defer s.statusLock.Unlock()
+	s.lock.Lock()
+	defer s.lock.Unlock()
 
-	if s.status == streamStatusActive {
-		s.input <- streamEvent{
-			event: streamEventData,
-			data:  value,
-		}
+	if !s.isActive() {
+		return
+	}
+
+	s.input <- streamEvent{
+		event: streamEventData,
+		data:  value,
 	}
 }
 
 // addArray adds array values into stream
 func (s *Stream) addArray(values []interface{}) {
-	s.statusLock.Lock()
-	defer s.statusLock.Unlock()
+	s.lock.Lock()
+	defer s.lock.Unlock()
 
-	if s.status == streamStatusActive {
-		for _, v := range values {
-			s.input <- streamEvent{
-				event: streamEventData,
-				data:  v,
-			}
+	if !s.isActive() {
+		return
+	}
+
+	for _, v := range values {
+		s.input <- streamEvent{
+			event: streamEventData,
+			data:  v,
 		}
 	}
 }
@@ -150,53 +195,25 @@ func (s *Stream) AddError(value interface{}) {
 		return
 	}
 
-	s.statusLock.Lock()
-	defer s.statusLock.Unlock()
+	s.lock.Lock()
+	defer s.lock.Unlock()
 
-	if s.status == streamStatusActive {
-		s.input <- streamEvent{
-			event: streamEventError,
-			data:  value,
-		}
+	if !s.isActive() {
+		return
 	}
-}
 
-// Close closes stream
-func (s *Stream) Close() {
-	s.statusLock.Lock()
-	defer s.statusLock.Unlock()
-
-	if s.status == streamStatusActive {
-		s.status = streamStatusClosed
-
-		s.input <- streamEvent{
-			event: streamEventComplete,
-			data:  nil,
-		}
-		close(s.input)
-		s.wg.Wait()
+	s.input <- streamEvent{
+		event: streamEventError,
+		data:  value,
 	}
-}
-
-// listen executes 3 handlers: onData, onError, OnComplete
-func (s *Stream) listen(handler chan streamEvent) {
-	s.listensLock.Lock()
-	s.listens = append(s.listens, handler)
-	s.listensLock.Unlock()
 }
 
 // Listen executes 3 handlers: onData, onError, OnComplete
 func (s *Stream) Listen(handlers ...EventHandler) *Stream {
+
 	if len(handlers) == 0 {
 		return s
 	}
-
-	s.statusLock.Lock()
-	if s.status != streamStatusActive {
-		s.statusLock.Unlock()
-		return s
-	}
-	s.statusLock.Unlock()
 
 	onNext := func(v interface{}) {
 		handlers[0](v)
@@ -214,7 +231,16 @@ func (s *Stream) Listen(handlers ...EventHandler) *Stream {
 		}
 	}
 
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	if !s.isActive() {
+		return s
+	}
+
 	eventInput := make(chan streamEvent)
+	s.listens = append(s.listens, eventInput)
+
 	go func() {
 		for item := range eventInput {
 			switch item.event {
@@ -227,26 +253,54 @@ func (s *Stream) Listen(handlers ...EventHandler) *Stream {
 			}
 		}
 	}()
-	s.listen(eventInput)
+
 	return s
 }
 
+// WaitDone waits until stream is closed
 func (s *Stream) WaitDone() {
 	s.wg.Wait()
 }
 
 // Just emits values and close stream
-func (s *Stream) Just(values ...interface{}) *Stream {
+func Just(values ...interface{}) *Stream {
+	stream := NewStream()
 	go func() {
-		s.addArray(values)
-		s.Close()
+		stream.addArray(values)
+		stream.Close()
 	}()
-	return s
+	return stream
 }
 
 // Filter filters elements emitted from streams
 func (s *Stream) Filter(apply func(value interface{}) bool) *Stream {
-	return s.subStream(func(input chan streamEvent) chan streamEvent {
+	fn := func(s *Stream, input chan streamEvent) chan streamEvent {
+		output := make(chan streamEvent)
+		go func() {
+			for item := range input {
+				if item.event == streamEventData {
+					if apply(item.data) {
+						output <- item
+					}
+					continue
+				}
+
+				// pass Error & Complete events always
+				output <- item
+			}
+
+			close(output)
+		}()
+
+		return output
+	}
+
+	return s.subStream(fn)
+}
+
+// Map
+func (s *Stream) Map(apply func(value interface{}) interface{}) *Stream {
+	fn := func(s *Stream, input chan streamEvent) chan streamEvent {
 		output := make(chan streamEvent)
 		go func() {
 			for item := range input {
@@ -256,14 +310,139 @@ func (s *Stream) Filter(apply func(value interface{}) bool) *Stream {
 					continue
 				}
 
-				if apply(item.data) {
-					output <- item
-				}
+				item.data = apply(item.data)
+				output <- item
 			}
 
 			close(output)
 		}()
 
 		return output
-	})
+	}
+
+	return s.subStream(fn)
+}
+
+// Take
+func (s *Stream) Take(n int) *Stream {
+	fn := func(s *Stream, input chan streamEvent) chan streamEvent {
+		output := make(chan streamEvent)
+		go func() {
+			if n <= 0 {
+				return
+			}
+
+			for item := range input {
+				output <- item
+
+				if item.event == streamEventData {
+					n--
+					if n <= 0 {
+						break
+					}
+				}
+			}
+
+			// if original stream is not closed
+			if n <= 0 {
+				output <- completeStreamEvent
+				go s.Close()
+			}
+
+			close(output) // close stream worker
+		}()
+
+		return output
+	}
+
+	return s.subStream(fn)
+}
+
+// TakeLast
+func (s *Stream) TakeLast(n int) *Stream {
+	fn := func(s *Stream, input chan streamEvent) chan streamEvent {
+		output := make(chan streamEvent)
+		go func() {
+			buf := make([]streamEvent, n)
+			for item := range input {
+				if item.event == streamEventData {
+					if len(buf) >= n {
+						buf = buf[1:]
+					}
+					buf = append(buf, item)
+					continue
+				}
+
+				// pass Error & Complete events always
+				output <- item
+			}
+
+			for _, v := range buf {
+				output <- v
+			}
+
+			close(output) // close stream worker
+		}()
+
+		return output
+	}
+
+	return s.subStream(fn)
+}
+
+// First returns stream that emmit first emitted value of the underlying stream
+func (s *Stream) First() *Stream {
+	fn := func(s *Stream, input chan streamEvent) chan streamEvent {
+		output := make(chan streamEvent)
+		go func() {
+			closed := true
+			for item := range input {
+				output <- item
+
+				if item.event == streamEventData {
+					closed = false
+					break
+				}
+			}
+
+			if !closed {
+				output <- completeStreamEvent
+				go s.Close()
+			}
+
+			close(output) // close stream worker
+		}()
+
+		return output
+	}
+
+	return s.subStream(fn)
+}
+
+// Last returns stream that emmit last emitted value of the underlying stream
+func (s *Stream) Last() *Stream {
+	fn := func(s *Stream, input chan streamEvent) chan streamEvent {
+		output := make(chan streamEvent)
+		go func() {
+			lastItem := completeStreamEvent
+			for item := range input {
+				if item.event == streamEventData {
+					lastItem = item
+					continue
+				}
+
+				output <- item
+			}
+
+			if lastItem.event == streamEventData {
+				output <- lastItem
+			}
+
+			close(output)
+		}()
+
+		return output
+	}
+
+	return s.subStream(fn)
 }
