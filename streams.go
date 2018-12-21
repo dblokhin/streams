@@ -6,6 +6,7 @@ package streams
 
 import (
 	"sync"
+	"time"
 )
 
 type S interface {
@@ -16,14 +17,14 @@ type S interface {
 
 type EventHandler func(value interface{})
 
-type streamHandler chan streamEvent
+type streamHandler chan *streamEvent
 
 // streamFunc changes input event and emmit it to new channel.
 // new channel MUST be closed when input closed
-type streamFunc func(s *Stream, input chan streamEvent) chan streamEvent
+type streamFunc func(s *Stream, input chan *streamEvent) chan *streamEvent
 
 // defaultStreamFunc doesn't change input data
-var defaultStreamFunc streamFunc = func(s *Stream, input chan streamEvent) chan streamEvent {
+var defaultStreamFunc streamFunc = func(s *Stream, input chan *streamEvent) chan *streamEvent {
 	return input
 }
 
@@ -50,7 +51,7 @@ type (
 )
 
 type Stream struct {
-	input   chan streamEvent
+	input   chan *streamEvent
 	fn      streamFunc
 	status  int32
 	listens []streamHandler
@@ -58,7 +59,7 @@ type Stream struct {
 	wg      sync.WaitGroup
 }
 
-var completeStreamEvent = streamEvent{
+var completeStreamEvent = &streamEvent{
 	event: streamEventComplete,
 	data:  nil,
 }
@@ -66,7 +67,7 @@ var completeStreamEvent = streamEvent{
 // NewStream returns created broadcast stream
 func NewStream() *Stream {
 	stream := &Stream{
-		input:  make(chan streamEvent, maxBufferSize),
+		input:  make(chan *streamEvent, maxBufferSize),
 		status: streamStatusActive,
 		fn:     defaultStreamFunc,
 	}
@@ -89,7 +90,7 @@ func (s *Stream) startWorker() {
 	}()
 }
 
-func (s *Stream) propagateItem(item streamEvent) {
+func (s *Stream) propagateItem(item *streamEvent) {
 	for _, handler := range s.listens {
 		handler <- item
 	}
@@ -132,13 +133,13 @@ func (s *Stream) subStream(fn streamFunc) *Stream {
 	}
 
 	stream := &Stream{
-		input:  make(chan streamEvent, maxBufferSize),
+		input:  make(chan *streamEvent, maxBufferSize),
 		status: streamStatusActive,
 		fn:     fn,
 	}
 
 	stream.startWorker()
-	eventInput := make(chan streamEvent)
+	eventInput := make(chan *streamEvent)
 	s.listens = append(s.listens, eventInput)
 
 	go func() {
@@ -166,7 +167,7 @@ func (s *Stream) Add(value interface{}) {
 		return
 	}
 
-	s.input <- streamEvent{
+	s.input <- &streamEvent{
 		event: streamEventData,
 		data:  value,
 	}
@@ -182,7 +183,7 @@ func (s *Stream) addArray(values []interface{}) {
 	}
 
 	for _, v := range values {
-		s.input <- streamEvent{
+		s.input <- &streamEvent{
 			event: streamEventData,
 			data:  v,
 		}
@@ -202,7 +203,7 @@ func (s *Stream) AddError(value interface{}) {
 		return
 	}
 
-	s.input <- streamEvent{
+	s.input <- &streamEvent{
 		event: streamEventError,
 		data:  value,
 	}
@@ -238,7 +239,7 @@ func (s *Stream) Listen(handlers ...EventHandler) *Stream {
 		return s
 	}
 
-	eventInput := make(chan streamEvent)
+	eventInput := make(chan *streamEvent)
 	s.listens = append(s.listens, eventInput)
 
 	go func() {
@@ -274,8 +275,8 @@ func Just(values ...interface{}) *Stream {
 
 // Filter filters elements emitted from streams
 func (s *Stream) Filter(apply func(value interface{}) bool) *Stream {
-	fn := func(s *Stream, input chan streamEvent) chan streamEvent {
-		output := make(chan streamEvent)
+	fn := func(s *Stream, input chan *streamEvent) chan *streamEvent {
+		output := make(chan *streamEvent)
 		go func() {
 			for item := range input {
 				if item.event == streamEventData {
@@ -300,8 +301,8 @@ func (s *Stream) Filter(apply func(value interface{}) bool) *Stream {
 
 // Map
 func (s *Stream) Map(apply func(value interface{}) interface{}) *Stream {
-	fn := func(s *Stream, input chan streamEvent) chan streamEvent {
-		output := make(chan streamEvent)
+	fn := func(s *Stream, input chan *streamEvent) chan *streamEvent {
+		output := make(chan *streamEvent)
 		go func() {
 			for item := range input {
 				// pass Error & Complete events always
@@ -325,8 +326,8 @@ func (s *Stream) Map(apply func(value interface{}) interface{}) *Stream {
 
 // Take
 func (s *Stream) Take(n int) *Stream {
-	fn := func(s *Stream, input chan streamEvent) chan streamEvent {
-		output := make(chan streamEvent)
+	fn := func(s *Stream, input chan *streamEvent) chan *streamEvent {
+		output := make(chan *streamEvent)
 		go func() {
 			if n <= 0 {
 				return
@@ -360,10 +361,10 @@ func (s *Stream) Take(n int) *Stream {
 
 // TakeLast
 func (s *Stream) TakeLast(n int) *Stream {
-	fn := func(s *Stream, input chan streamEvent) chan streamEvent {
-		output := make(chan streamEvent)
+	fn := func(s *Stream, input chan *streamEvent) chan *streamEvent {
+		output := make(chan *streamEvent)
 		go func() {
-			buf := make([]streamEvent, n)
+			buf := make([]*streamEvent, n)
 			for item := range input {
 				if item.event == streamEventData {
 					if len(buf) >= n {
@@ -392,8 +393,8 @@ func (s *Stream) TakeLast(n int) *Stream {
 
 // First returns stream that emmit first emitted value of the underlying stream
 func (s *Stream) First() *Stream {
-	fn := func(s *Stream, input chan streamEvent) chan streamEvent {
-		output := make(chan streamEvent)
+	fn := func(s *Stream, input chan *streamEvent) chan *streamEvent {
+		output := make(chan *streamEvent)
 		go func() {
 			closed := true
 			for item := range input {
@@ -421,8 +422,8 @@ func (s *Stream) First() *Stream {
 
 // Last returns stream that emmit last emitted value of the underlying stream
 func (s *Stream) Last() *Stream {
-	fn := func(s *Stream, input chan streamEvent) chan streamEvent {
-		output := make(chan streamEvent)
+	fn := func(s *Stream, input chan *streamEvent) chan *streamEvent {
+		output := make(chan *streamEvent)
 		go func() {
 			lastItem := completeStreamEvent
 			for item := range input {
@@ -438,6 +439,131 @@ func (s *Stream) Last() *Stream {
 				output <- lastItem
 			}
 
+			close(output)
+		}()
+
+		return output
+	}
+
+	return s.subStream(fn)
+}
+
+// Distinct
+func (s *Stream) Distinct(apply func(value interface{}) interface{}) *Stream {
+	fn := func(s *Stream, input chan *streamEvent) chan *streamEvent {
+		output := make(chan *streamEvent)
+		go func() {
+			dups := make(map[interface{}]*struct{})
+			for item := range input {
+				if item.event == streamEventData {
+					if _, exist := dups[item.data]; !exist {
+						output <- item
+						dups[item.data] = nil
+					}
+					continue
+				}
+
+				// pass Error & Complete events always
+				output <- item
+			}
+
+			close(output)
+		}()
+
+		return output
+	}
+
+	return s.subStream(fn)
+}
+
+// Debounce emits the latest value in given time window
+func (s *Stream) Debounce(d time.Duration) *Stream {
+	fn := func(s *Stream, input chan *streamEvent) chan *streamEvent {
+		output := make(chan *streamEvent)
+		go func() {
+			tick := time.NewTicker(d)
+			lastValue := <-input
+
+			for lastValue != nil {
+				select {
+				case <-tick.C:
+					output <- lastValue
+				case item := <-input:
+					if item.event == streamEventData {
+						lastValue = item
+						continue
+					}
+
+					// pass Error & Complete events always
+					output <- item
+				}
+			}
+
+			tick.Stop()
+			close(output)
+		}()
+
+		return output
+	}
+
+	return s.subStream(fn)
+}
+
+// ElementAt
+func (s *Stream) ElementAt(n int) *Stream {
+	return s.Skip(n - 1).First()
+}
+
+// Skip
+func (s *Stream) Skip(n int) *Stream {
+	fn := func(s *Stream, input chan *streamEvent) chan *streamEvent {
+		output := make(chan *streamEvent)
+		go func() {
+			for item := range input {
+				if n <= 0 {
+					output <- item
+					continue
+				}
+
+				if item.event == streamEventData {
+					n--
+					continue
+				}
+
+				output <- item
+			}
+
+			close(output) // close stream worker
+		}()
+
+		return output
+	}
+
+	return s.subStream(fn)
+}
+
+// SkipLast
+func (s *Stream) SkipLast(n int) *Stream {
+	fn := func(s *Stream, input chan *streamEvent) chan *streamEvent {
+		output := make(chan *streamEvent)
+		go func() {
+			buf := make(chan *streamEvent, n)
+			for item := range input {
+				// pass Error & Complete events always
+				if item.event == streamEventError || item.event == streamEventComplete {
+					output <- item
+					continue
+				}
+
+				select {
+				case buf <- item:
+				default:
+					output <- <-buf
+					buf <- item
+				}
+			}
+
+			close(buf)
 			close(output)
 		}()
 
