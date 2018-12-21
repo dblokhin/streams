@@ -38,7 +38,7 @@ const (
 	streamEventError
 	streamEventComplete
 
-	maxBufferSize = 0
+	defaultBufferSize = 50
 )
 
 type (
@@ -51,12 +51,13 @@ type (
 )
 
 type Stream struct {
-	input   chan *streamEvent
-	fn      streamFunc
-	status  int32
-	listens []streamHandler
-	lock    sync.Mutex
-	wg      sync.WaitGroup
+	input      chan *streamEvent
+	bufferSize int
+	fn         streamFunc
+	status     int32
+	listens    []streamHandler
+	lock       sync.Mutex
+	wg         sync.WaitGroup
 }
 
 var completeStreamEvent = &streamEvent{
@@ -67,9 +68,22 @@ var completeStreamEvent = &streamEvent{
 // NewStream returns created broadcast stream
 func NewStream() *Stream {
 	stream := &Stream{
-		input:  make(chan *streamEvent, maxBufferSize),
-		status: streamStatusActive,
-		fn:     defaultStreamFunc,
+		input:      make(chan *streamEvent, defaultBufferSize),
+		bufferSize: defaultBufferSize,
+		status:     streamStatusActive,
+		fn:         defaultStreamFunc,
+	}
+
+	stream.startWorker()
+	return stream
+}
+
+func NewStreamSize(bufferSize int) *Stream {
+	stream := &Stream{
+		input:      make(chan *streamEvent, bufferSize),
+		bufferSize: bufferSize,
+		status:     streamStatusActive,
+		fn:         defaultStreamFunc,
 	}
 
 	stream.startWorker()
@@ -133,9 +147,10 @@ func (s *Stream) subStream(fn streamFunc) *Stream {
 	}
 
 	stream := &Stream{
-		input:  make(chan *streamEvent, maxBufferSize),
-		status: streamStatusActive,
-		fn:     fn,
+		input:      make(chan *streamEvent, s.bufferSize),
+		bufferSize: s.bufferSize,
+		status:     streamStatusActive,
+		fn:         fn,
 	}
 
 	stream.startWorker()
