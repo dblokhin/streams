@@ -274,8 +274,9 @@ func (s *Stream) Listen(handlers ...EventHandler) *Stream {
 }
 
 // WaitDone waits until stream is closed
-func (s *Stream) WaitDone() {
+func (s *Stream) WaitDone() *Stream {
 	s.wg.Wait()
+	return s
 }
 
 // Just emits values and close stream

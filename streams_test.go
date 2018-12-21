@@ -111,89 +111,81 @@ func TestStream_Listen2(t *testing.T) {
 }
 
 func TestStream_Add(t *testing.T) {
+	const (
+		n = 10
+		m = 10
+	)
+
+	ans := 0
+	lock := sync.Mutex{}
+
+	handler := func(v interface{}) {
+		lock.Lock()
+		ans += v.(int)
+		lock.Unlock()
+	}
+
 	s := NewStream()
-
-	h := func(index int) EventHandler {
-		return func(value interface{}) {
-			//t.Logf("from %d value: %v\n", index, value)
-		}
-	}
-
-	const n = 10
-
 	for i := 0; i < n; i++ {
-		s.Listen(h(i))
+		s.Listen(handler)
 	}
 
-	for i := 0; i < 7; i++ {
-		//t.Logf("send value: %d", i)
+	for i := 1; i <= m; i++ {
 		s.Add(i)
 	}
 
 	s.Close()
-	s.WaitDone()
+
+	expect := ((m * (m + 1)) / 2) * n
+
+	if ans != expect {
+		t.Fatalf("invalid answer: %d, expected: %d", ans, expect)
+	}
 }
 
 func TestStream_Add2(t *testing.T) {
+	const (
+		n = 10
+		m = 100
+	)
+
+	ans := 0
+	lock := sync.Mutex{}
+
+	handler := func(v interface{}) {
+		lock.Lock()
+		ans += v.(int)
+		lock.Unlock()
+	}
+
+	var wg sync.WaitGroup
 	s := NewStream()
 
-	h := func(index int) EventHandler {
-		return func(value interface{}) {
-			//t.Logf("from %d value: %v\n", index, value)
-		}
-	}
-
-	const n = 100
-	var wg1, wg2 sync.WaitGroup
-	wg1.Add(n)
+	// add listeners
+	wg.Add(n)
 	for i := 0; i < n; i++ {
-		go func(idx int) {
-			s.Listen(h(idx))
-			wg1.Done()
-		}(i)
+		go func() {
+			s.Listen(handler)
+			wg.Done()
+		}()
 	}
+	wg.Wait()
 
-	const m = 1000
-	wg2.Add(m)
-	for i := 0; i < m; i++ {
+	// add values
+	wg.Add(m)
+	for i := 1; i <= m; i++ {
 		go func(idx int) {
-			//t.Logf("send value: %d", i)
 			s.Add(idx)
-			wg2.Done()
-			s.Close()
+			wg.Done()
 		}(i)
 	}
 
-	wg2.Wait()
-	wg1.Wait()
+	wg.Wait()
 	s.Close()
-	s.WaitDone()
-}
 
-func TestStream_Add3(t *testing.T) {
-	s := NewStream()
-
-	h := func(index int) EventHandler {
-		return func(value interface{}) {
-			//t.Logf("from %d value: %v\n", index, value)
-		}
-	}
-
-	const n = 1
-
-	for i := 0; i < n; i++ {
-		go func(idx int) {
-			s.Listen(h(idx))
-		}(i)
-	}
-
-	const listensLock = 500
-	s.Close()
-	for i := 0; i < listensLock; i++ {
-		go func(idx int) {
-			//t.Logf("send value: %d", i)
-			s.Add(idx)
-		}(i)
+	expect := ((m * (m + 1)) / 2) * n
+	if ans != expect {
+		t.Fatalf("invalid answer: %d, expected: %d", ans, expect)
 	}
 }
 
@@ -201,8 +193,6 @@ func TestStream_Just(t *testing.T) {
 	ans := 0
 	var m sync.Mutex
 	handler := func(value interface{}) {
-		//t.Logf("value: %v\n", value)
-
 		m.Lock()
 		ans++
 		ans += value.(int)
@@ -236,10 +226,6 @@ func TestStream_Filter(t *testing.T) {
 	if ans != 1114 {
 		t.Fatalf("invalid answer: %d, expected: %d", ans, 1114)
 	}
-
-	// check for empty stream
-	Just().Filter(filter).Listen(h).WaitDone()
-
 }
 
 func TestStream_First(t *testing.T) {
@@ -259,5 +245,37 @@ func TestStream_First(t *testing.T) {
 	Just(1, 2, 42, 3).Filter(filter).First().Listen(handler).WaitDone()
 	if ans != 42 {
 		t.Fatalf("invalid answer: %d, expected: %d", ans, 42)
+	}
+}
+
+func TestStream_Last(t *testing.T) {
+	ans := 0
+	var m sync.Mutex
+	handler := func(value interface{}) {
+		m.Lock()
+		ans = value.(int)
+		m.Unlock()
+	}
+
+	filter := func(value interface{}) bool {
+		return value.(int) > 10
+	}
+
+	Just(1, 2, 42, 3).Filter(filter).Last().Listen(handler).WaitDone()
+	if ans != 42 {
+		t.Fatalf("invalid answer: %d, expected: %d", ans, 42)
+	}
+}
+
+func TestStream_WaitDone(t *testing.T) {
+	// check for empty stream
+	st1 := Just().WaitDone()
+	if st1.status != streamStatusClosed {
+		t.Fatalf("invalid status of closed channel: %d", st1.status)
+	}
+
+	st2 := Just(1, 2, 3).WaitDone()
+	if st2.status != streamStatusClosed {
+		t.Fatalf("invalid status of closed channel: %d", st2.status)
 	}
 }
