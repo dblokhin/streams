@@ -228,6 +228,18 @@ func TestStream_Filter(t *testing.T) {
 	}
 }
 
+func TestStream_Map(t *testing.T) {
+	h := func(value interface{}) {
+		t.Logf(value.(string))
+	}
+
+	myMap := func(x interface{}) interface{} {
+		return fmt.Sprintf("Hello, %d number", x.(int))
+	}
+
+	Just(1, 2, 3, 4, 10, 100, 1000).Map(myMap).Listen(h).WaitDone()
+}
+
 func TestStream_First(t *testing.T) {
 
 	ans := 0
