@@ -279,3 +279,42 @@ func TestStream_WaitDone(t *testing.T) {
 		t.Fatalf("invalid status of closed channel: %d", st2.status)
 	}
 }
+
+func BenchmarkStream_Add_1Handler(b *testing.B) {
+	handler := func(value interface{}) {
+	}
+
+	s := NewStream()
+	s.Listen(handler)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		s.Add(i)
+	}
+
+	s.Close()
+	s.WaitDone()
+}
+
+func BenchmarkStream_Add_NHandlers(b *testing.B) {
+	s := NewStream()
+
+	h := func(index int) EventHandler {
+		return func(value interface{}) {
+		}
+	}
+
+	const n = 100
+
+	for i := 0; i < n; i++ {
+		s.Listen(h(i))
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		s.Add(i)
+	}
+
+	s.Close()
+	s.WaitDone()
+}
