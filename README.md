@@ -56,5 +56,15 @@ Streams can be transformed:
     myStream.First().Map(myMap).Listen(myHandler2)
 ```
 
+### Attention
+Be aware that all stream transformed methods return new stream. You should subscribe your event listeners respectively.
+ ```golang
+     // DON'T:
+     myStream.Listen(myHandler).Filter(filter).Take(5)
+ 
+     // DO:
+     myStream.Filter(filter).Take(5).Listen(myHandler)
+ ```
+
 ## Contributing
 You are welcome! Github issues is the best place for that's purposes.
