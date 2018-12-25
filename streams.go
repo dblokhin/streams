@@ -55,7 +55,7 @@ type Stream struct {
 	bufferSize int
 	fn         streamFunc
 	status     int32
-	listens    []streamHandler
+	listens    []Subscription
 	lock       sync.Mutex
 	wg         sync.WaitGroup
 }
@@ -105,14 +105,22 @@ func (s *Stream) startWorker() {
 }
 
 func (s *Stream) propagateItem(item *streamEvent) {
-	for _, handler := range s.listens {
-		handler <- item
+	for idx, sub := range s.listens {
+		// remove canceled subscription
+		if sub.send(item) == subCancel {
+			go func(remove int) {
+				s.lock.Lock()
+				s.listens[remove].close()
+				s.listens = append(s.listens[:remove], s.listens[remove+1:]...)
+				s.lock.Unlock()
+			}(idx)
+		}
 	}
 }
 
 func (s *Stream) closeListens() {
-	for _, handler := range s.listens {
-		close(handler)
+	for _, sub := range s.listens {
+		sub.close()
 	}
 }
 
@@ -152,23 +160,18 @@ func (s *Stream) subStream(fn streamFunc) *Stream {
 		status:     streamStatusActive,
 		fn:         fn,
 	}
-
 	stream.startWorker()
-	eventInput := make(chan *streamEvent)
-	s.listens = append(s.listens, eventInput)
 
-	go func() {
-		for item := range eventInput {
-			switch item.event {
-			case streamEventData:
-				stream.Add(item.data)
-			case streamEventError:
-				stream.AddError(item.data)
-			case streamEventComplete:
-				stream.Close()
-			}
-		}
-	}()
+	sub := Subscription{
+		input:   make(chan *streamEvent),
+		onNext:  stream.Add,
+		onError: stream.AddError,
+		onComplete: func(value interface{}) {
+			stream.Close()
+		},
+	}
+	sub.startWorker()
+	s.listens = append(s.listens, sub)
 
 	return stream
 }
@@ -241,7 +244,7 @@ func (s *Stream) Listen(handlers ...EventHandler) *Stream {
 		}
 	}
 
-	onComplete := func() {
+	onComplete := func(v interface{}) {
 		if len(handlers) > 2 {
 			handlers[2](nil)
 		}
@@ -254,21 +257,16 @@ func (s *Stream) Listen(handlers ...EventHandler) *Stream {
 		return s
 	}
 
-	eventInput := make(chan *streamEvent)
-	s.listens = append(s.listens, eventInput)
+	sub := Subscription{
+		status:     subActive,
+		input:      make(chan *streamEvent),
+		onNext:     onNext,
+		onError:    onError,
+		onComplete: onComplete,
+	}
 
-	go func() {
-		for item := range eventInput {
-			switch item.event {
-			case streamEventData:
-				onNext(item.data)
-			case streamEventError:
-				onError(item.data)
-			case streamEventComplete:
-				onComplete()
-			}
-		}
-	}()
+	sub.startWorker()
+	s.listens = append(s.listens, sub)
 
 	return s
 }
@@ -277,16 +275,6 @@ func (s *Stream) Listen(handlers ...EventHandler) *Stream {
 func (s *Stream) WaitDone() *Stream {
 	s.wg.Wait()
 	return s
-}
-
-// Just emits values and close stream
-func Just(values ...interface{}) *Stream {
-	stream := NewStream()
-	go func() {
-		stream.addArray(values)
-		stream.Close()
-	}()
-	return stream
 }
 
 // Filter filters elements emitted from streams
@@ -587,4 +575,14 @@ func (s *Stream) SkipLast(n int) *Stream {
 	}
 
 	return s.subStream(fn)
+}
+
+// Just emits values and close stream
+func Just(values ...interface{}) *Stream {
+	stream := NewStream()
+	go func() {
+		stream.addArray(values)
+		stream.Close()
+	}()
+	return stream
 }

@@ -189,23 +189,6 @@ func TestStream_Add2(t *testing.T) {
 	}
 }
 
-func TestStream_Just(t *testing.T) {
-	ans := 0
-	var m sync.Mutex
-	handler := func(value interface{}) {
-		m.Lock()
-		ans++
-		ans += value.(int)
-		m.Unlock()
-	}
-
-	Just(1, 2, 3, 4).Listen(handler).WaitDone()
-
-	if ans != 14 {
-		t.Fatalf("invalid answer: %d, expected: %d", ans, 14)
-	}
-}
-
 func TestStream_Filter(t *testing.T) {
 	ans := 0
 	var m sync.Mutex
@@ -261,19 +244,24 @@ func TestStream_First(t *testing.T) {
 }
 
 func TestStream_Last(t *testing.T) {
-	ans := 0
 	var m sync.Mutex
+	var wg sync.WaitGroup
+
+	ans := 0
 	handler := func(value interface{}) {
 		m.Lock()
 		ans = value.(int)
 		m.Unlock()
+		wg.Done()
 	}
 
 	filter := func(value interface{}) bool {
 		return value.(int) > 10
 	}
 
-	Just(1, 2, 42, 3).Filter(filter).Last().Listen(handler).WaitDone()
+	wg.Add(1)
+	Just(1, 2, 42, 3).Filter(filter).Last().Listen(handler)
+	wg.Wait()
 	if ans != 42 {
 		t.Fatalf("invalid answer: %d, expected: %d", ans, 42)
 	}
@@ -289,6 +277,23 @@ func TestStream_WaitDone(t *testing.T) {
 	st2 := Just(1, 2, 3).WaitDone()
 	if st2.status != streamStatusClosed {
 		t.Fatalf("invalid status of closed channel: %d", st2.status)
+	}
+}
+
+func TestStream_Just(t *testing.T) {
+	ans := 0
+	var m sync.Mutex
+	handler := func(value interface{}) {
+		m.Lock()
+		ans++
+		ans += value.(int)
+		m.Unlock()
+	}
+
+	Just(1, 2, 3, 4).Listen(handler).WaitDone()
+
+	if ans != 14 {
+		t.Fatalf("invalid answer: %d, expected: %d", ans, 14)
 	}
 }
 
@@ -311,8 +316,10 @@ func BenchmarkStream_Add_1Handler(b *testing.B) {
 func BenchmarkStream_Add_NHandlers(b *testing.B) {
 	s := NewStream()
 
+	var wg sync.WaitGroup
 	h := func(index int) EventHandler {
 		return func(value interface{}) {
+			wg.Done()
 		}
 	}
 
@@ -322,6 +329,7 @@ func BenchmarkStream_Add_NHandlers(b *testing.B) {
 		s.Listen(h(i))
 	}
 
+	wg.Add(n * b.N)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		s.Add(i)
@@ -329,4 +337,5 @@ func BenchmarkStream_Add_NHandlers(b *testing.B) {
 
 	s.Close()
 	s.WaitDone()
+	wg.Wait()
 }
